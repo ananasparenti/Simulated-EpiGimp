@@ -287,12 +287,53 @@ void MainWindow::onNew()
 
 void MainWindow::onOpen()
 {
-    QMessageBox::information(this, "Ouvrir", "Ouvrir un fichier");
+    if (!ui->canvas) {
+        QMessageBox::warning(this, tr("Erreur"), tr("Aucun canvas disponible."));
+        return;
+    }
+
+    QString file = QFileDialog::getOpenFileName(this, tr("Ouvrir une image"), QString(),
+                                                tr("Images (*.png *.jpg *.jpeg *.bmp *.gif)"));
+    if (file.isEmpty()) return;
+
+    QImage img;
+    if (!img.load(file)) {
+        QMessageBox::warning(this, tr("Erreur"), tr("Impossible de charger l'image."));
+        return;
+    }
+
+    // Insert the image as an active image centered on the canvas so the user
+    // can move/resize it before flattening.
+    if (ui->canvas) ui->canvas->insertImageCentered(img);
+    updateUndoRedoActions();
 }
 
 void MainWindow::onSave()
 {
-    QMessageBox::information(this, "Enregistrer", "Enregistrer le projet");
+    if (!ui->canvas) {
+        QMessageBox::warning(this, tr("Erreur"), tr("Aucun canvas disponible à enregistrer."));
+        return;
+    }
+
+    QString filter = tr("PNG (*.png);;JPEG (*.jpg *.jpeg);;BMP (*.bmp)");
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Enregistrer le canevas"), QString(), filter);
+    if (fileName.isEmpty()) return;
+
+    // Ensure an extension is present; default to .png
+    if (!fileName.contains('.')) fileName += ".png";
+
+    // Determine format from extension
+    QByteArray fmt;
+    if (fileName.endsWith(".jpg", Qt::CaseInsensitive) || fileName.endsWith(".jpeg", Qt::CaseInsensitive)) fmt = "JPEG";
+    else if (fileName.endsWith(".bmp", Qt::CaseInsensitive)) fmt = "BMP";
+    else fmt = "PNG";
+
+    bool ok = ui->canvas->saveToFile(fileName, fmt.constData());
+    if (!ok) {
+        QMessageBox::warning(this, tr("Erreur"), tr("Impossible d'enregistrer le fichier."));
+    } else {
+        QMessageBox::information(this, tr("Enregistré"), tr("Le canevas a été enregistré avec succès."));
+    }
 }
 
 void MainWindow::onExit()

@@ -39,6 +39,15 @@ public:
     // inserted image down if it's larger than the canvas while keeping aspect ratio.
     void insertImageCentered(const QImage &img);
 
+    // Load an image from disk and set it as the canvas content. If the image
+    // size differs from the canvas, the image will be scaled to fit while
+    // preserving aspect ratio and centered on a white background.
+    bool loadFromFile(const QString &path);
+
+    // Save the current canvas (including any active image) to a file.
+    // If 'format' is null, QImage::save will infer from the file extension.
+    bool saveToFile(const QString &path, const char *format = nullptr);
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;

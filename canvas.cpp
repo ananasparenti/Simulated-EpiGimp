@@ -299,6 +299,44 @@ void Canvas::insertImageCentered(const QImage &img)
     update();
 }
 
+bool Canvas::loadFromFile(const QString &path)
+{
+    if (path.isEmpty()) return false;
+
+    QImage img;
+    if (!img.load(path)) return false;
+
+    // If image is the same size as canvas, set directly
+    if (img.size() == image.size()) {
+        image = img.convertToFormat(QImage::Format_RGB32);
+    } else {
+        // Create a white background image the same size as the canvas
+        QImage background(image.size(), QImage::Format_RGB32);
+        background.fill(Qt::white);
+
+        // Scale the loaded image to fit into the canvas while preserving aspect ratio
+        QImage scaled = img.scaled(image.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+        // Center the scaled image on the white background
+        QPoint topLeft((background.width() - scaled.width()) / 2,
+                       (background.height() - scaled.height()) / 2);
+        QPainter p(&background);
+        p.drawImage(topLeft, scaled);
+        image = background;
+    }
+
+    // Clear any active image state since we replaced the canvas content
+    activeImage = QImage();
+    hasActiveImage = false;
+    hasLastInserted = false;
+    lastInsertedImage = QImage();
+
+    // Save state for undo/redo and update display
+    saveState();
+    update();
+    return true;
+}
+
 void Canvas::flattenActiveImage()
 {
     if (!hasActiveImage || activeImage.isNull()) return;
@@ -314,4 +352,21 @@ void Canvas::flattenActiveImage()
 
     activeImage = QImage();
     hasActiveImage = false;
+}
+
+bool Canvas::saveToFile(const QString &path, const char *format)
+{
+    if (path.isEmpty()) return false;
+
+    // Create a copy of the current image so we don't modify the in-memory canvas.
+    QImage out = image;
+
+    // If there's an active image (not yet flattened), draw it on top for export.
+    if (hasActiveImage && !activeImage.isNull()) {
+        QPainter p(&out);
+        p.drawImage(activeImagePos, activeImage);
+    }
+
+    // Let QImage decide the format from the extension if format == nullptr
+    return out.save(path, format);
 }
