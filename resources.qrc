@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="assets">
+        <file alias="paint-brush.png">assets/paint-brush.png</file>
+        <file alias="color-wheel.png">assets/color-wheel.png</file>
+        <file alias="size_brush.png">assets/size_brush.png</file>
+        <file alias="eraser.png">assets/eraser.png</file>
+        <file alias="area.png">assets/area.png</file>
+        <file alias="bucket.png">assets/bucket.png</file>
+        <file alias="move.png">assets/move.png</file>
+    <file alias="image.png">assets/image.png</file>
+    </qresource>
+</RCC>

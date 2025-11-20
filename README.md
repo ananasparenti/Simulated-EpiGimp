@@ -25,9 +25,9 @@ Epi-Gimp est une application de dessin basique qui permet de créer des illustra
 ## 🛠️ Technologies utilisées
 
 - **Langage** : C++17
-- **Framework** : Qt 5/6 (Widgets, Core, Gui)
+- **Framework** : Qt 5/6 (Widgets, Core, Gui, Image)
 - **Build System** : CMake 3.16+
-- **IDE recommandé** : Qt Creator
+- **IDE recommandé** : Qt Creator ou VS Code
 
 ## 📦 Installation
 
