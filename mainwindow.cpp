@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "helpdialog.h"
 #include <QMessageBox>
 #include <QColorDialog>
 #include <QFileDialog>
@@ -14,6 +15,12 @@
 #include <QPushButton>
 #include <QDebug>
 #include <QPixmap>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QTcpSocket>
+#include <QFileInfo>
+#include <QDir>
+#include <QCoreApplication>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -85,6 +92,11 @@ void MainWindow::createActions()
     redoAction = new QAction(tr("&Refaire"), this);
     redoAction->setShortcut(QKeySequence::Redo);
     connect(redoAction, &QAction::triggered, this, &MainWindow::onRedo);
+
+    // Actions du menu Aide
+    helpDocAction = new QAction(tr("&Documentation en ligne"), this);
+    helpDocAction->setShortcut(QKeySequence::HelpContents);
+    connect(helpDocAction, &QAction::triggered, this, &MainWindow::onHelpDocumentation);
 }
 
 void MainWindow::createMenus()
@@ -112,6 +124,7 @@ void MainWindow::createMenus()
     filtersMenu = menuBar()->addMenu(tr("Filtres"));
     windowsMenu = menuBar()->addMenu(tr("Fenêtres"));
     helpMenu = menuBar()->addMenu(tr("Aide"));
+    helpMenu->addAction(helpDocAction);
 }
 
 void MainWindow::createToolbar()
@@ -370,4 +383,31 @@ void MainWindow::onBrushSizeChanged(int size)
     if (ui->canvas) ui->canvas->setBrushSize(size);
     // update popup label if present
     if (popupBrushSizeLabel) popupBrushSizeLabel->setText(QString("%1 px").arg(size));
+}
+
+void MainWindow::onHelpDocumentation()
+{
+    // 1) Try local docsify server at 127.0.0.1:3000
+    QTcpSocket socket;
+    socket.connectToHost("127.0.0.1", 3000);
+    bool serverUp = socket.waitForConnected(200);
+    if (serverUp) {
+        QDesktopServices::openUrl(QUrl("http://127.0.0.1:3000/"));
+        socket.disconnectFromHost();
+        return;
+    }
+
+    // 2) Try local docs file next to the application
+    QString docsPath = QCoreApplication::applicationDirPath() + "/../docs/index.html";
+    QFileInfo fi(docsPath);
+    if (fi.exists() && fi.isFile()) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QDir::toNativeSeparators(fi.absoluteFilePath())));
+        return;
+    }
+
+    // 3) Fallback to the online Docsify site
+    QUrl url("https://ananasparenti.github.io/Simulated-EpiGimp/");
+    if (!QDesktopServices::openUrl(url)) {
+        QMessageBox::warning(this, tr("Erreur"), tr("Impossible d'ouvrir la documentation en ligne."));
+    }
 }

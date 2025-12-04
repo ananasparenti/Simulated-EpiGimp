@@ -10,7 +10,10 @@
 #include <QSlider>
 #include <QLabel>
 #include <QColorDialog>
+#include <QDesktopServices>
+#include <QUrl>
 #include "canvas.h"
+#include "helpdialog.h"
 namespace Ui { class MainWindow; }
 
 class MainWindow : public QMainWindow
@@ -50,6 +53,7 @@ private:
     QAction *exitAction;
     QAction *undoAction;
     QAction *redoAction;
+    QAction *helpDocAction;
     // Tool state
     QString currentTool;
     // popup for brush size
@@ -69,6 +73,7 @@ private slots:
     void onToolButtonClicked();
     void onSelectBrushTool();
     void onToggleBrushSizeVisibility();
+    void onHelpDocumentation();
 };
 
 #endif // MAINWINDOW_H
