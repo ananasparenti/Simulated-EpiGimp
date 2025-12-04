@@ -21,6 +21,8 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QCoreApplication>
+#include <QListWidget>
+#include <QLineEdit>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -56,6 +58,50 @@ MainWindow::MainWindow(QWidget *parent)
     if (ui->canvas) ui->canvas->setTool(currentTool);
 
     updateUndoRedoActions();
+
+    // Initialize layers UI if present
+    if (ui->addLayerButton) connect(ui->addLayerButton, &QPushButton::clicked, this, &MainWindow::onAddLayerClicked);
+    if (ui->layersList) connect(ui->layersList, &QListWidget::currentRowChanged, this, &MainWindow::onLayerSelectionChanged);
+    // Canvas layer signals -> UI updates
+    if (ui->canvas) {
+        connect(ui->canvas, &Canvas::layersChanged, this, &MainWindow::onLayersChanged);
+        connect(ui->canvas, &Canvas::layerUpdated, this, &MainWindow::onLayerUpdated);
+    }
+    // populate initial layers list from canvas (use custom widget: name above thumbnail)
+    if (ui->canvas && ui->layersList) {
+        int count = ui->canvas->layerCount();
+        ui->layersList->clear();
+        // display topmost layer first (reverse order) so the newest/bottom layer
+        // appears at the bottom of the list.
+        for (int i = count - 1; i >= 0; --i) {
+            QString name = QString("Calque %1").arg(i);
+            QListWidgetItem *it = new QListWidgetItem();
+            QWidget *w = new QWidget();
+            QVBoxLayout *lay = new QVBoxLayout(w);
+            lay->setContentsMargins(4,4,4,4);
+            QLineEdit *nameEdit = new QLineEdit(name, w);
+            nameEdit->setObjectName("layerName");
+            nameEdit->setAlignment(Qt::AlignCenter);
+            nameEdit->setFrame(false);
+            QLabel *thumb = new QLabel(w);
+            thumb->setObjectName("layerThumb");
+            thumb->setAlignment(Qt::AlignCenter);
+            QPixmap px = ui->canvas->layerThumbnail(i, QSize(200,140));
+            if (!px.isNull()) thumb->setPixmap(px);
+            lay->addWidget(nameEdit);
+            lay->addWidget(thumb);
+            w->setLayout(lay);
+            it->setSizeHint(QSize(200, 220));
+            ui->layersList->addItem(it);
+            ui->layersList->setItemWidget(it, w);
+            // don't set item text (we use a custom widget with name above the thumbnail)
+            connect(nameEdit, &QLineEdit::editingFinished, this, [this, nameEdit]{ /* name stored in widget only */ });
+        }
+        // Map active layer index (canvas index) to UI row (reversed)
+        int activeIdx = ui->canvas->activeLayer();
+        int uiRow = (activeIdx < 0) ? -1 : (ui->layersList->count() - 1 - activeIdx);
+        if (uiRow >= 0) ui->layersList->setCurrentRow(uiRow);
+    }
 }
 
 MainWindow::~MainWindow()
@@ -240,6 +286,9 @@ void MainWindow::onToolButtonClicked()
     // Inform canvas which tool is active so it can enable/disable drawing
     if (ui->canvas) ui->canvas->setTool(currentTool);
 
+    // Inform canvas which tool is active so it can enable/disable drawing
+    if (ui->canvas) ui->canvas->setTool(currentTool);
+
     // visual feedback: highlight selected button and clear others
     QStringList allToolNames = {"toolBrushButton","toolColorButtonLeft","toolSizeButton","toolEraserButton","toolAreaButton","toolBucketButton","toolMoveButton"};
     // include image button in the tool name list for visual updates
@@ -257,6 +306,110 @@ void MainWindow::onToolButtonClicked()
         if (ui->canvas) ui->canvas->setCursor(Qt::ClosedHandCursor);
     } else {
         if (ui->canvas) ui->canvas->unsetCursor();
+    }
+}
+
+// Layers handling
+void MainWindow::onAddLayerClicked()
+{
+    if (!ui->canvas) return;
+    ui->canvas->addLayer();
+    // refresh list
+    if (ui->layersList) {
+        // Rebuild the list so order remains consistent (topmost first)
+        onLayersChanged();
+        // Map active layer index to UI row and select it
+        int activeIdx = ui->canvas->activeLayer();
+        int uiRow = (activeIdx < 0) ? -1 : (ui->layersList->count() - 1 - activeIdx);
+        if (uiRow >= 0) ui->layersList->setCurrentRow(uiRow);
+    }
+}
+
+void MainWindow::onLayerSelectionChanged()
+{
+    if (!ui->canvas || !ui->layersList) return;
+    int idx = ui->layersList->currentRow();
+    if (idx >= 0 && idx < ui->canvas->layerCount()) {
+        // Map UI row (0=topmost) to canvas layer index (0=bottom)
+        int layerIdx = ui->canvas->layerCount() - 1 - idx;
+        ui->canvas->setActiveLayer(layerIdx);
+    }
+}
+
+void MainWindow::onLayersChanged()
+{
+    if (!ui->canvas || !ui->layersList) return;
+    int count = ui->canvas->layerCount();
+    // rebuild list preserving any user-edited names
+    QStringList currentNames;
+    // extract existing names from custom widgets if present
+    for (int i = 0; i < ui->layersList->count(); ++i) {
+        QListWidgetItem *old = ui->layersList->item(i);
+        QWidget *w = ui->layersList->itemWidget(old);
+        if (w) {
+            QLineEdit *le = w->findChild<QLineEdit*>("layerName");
+            if (le) currentNames << le->text(); else currentNames << old->text();
+        } else {
+            currentNames << old->text();
+        }
+    }
+    ui->layersList->clear();
+    // Display most recent layers first: iterate canvas indices from last to first
+    for (int ci = count - 1; ci >= 0; --ci) {
+        // Map canvas index to possible preserved name from previous UI order
+        // previous UI stored names in top-to-bottom order; compute corresponding UI index
+        int prevUiIndex = ui->layersList->count(); // since we've cleared, use current size to append
+        // Try to find a name from currentNames: index in currentNames corresponds to ui row
+        QString name;
+        int nameIndexInOldUI = (currentNames.size() > 0) ? (currentNames.size() - 1 - ci + (count - currentNames.size())) : -1;
+        // Fallback: simple default name
+        if (ci >= 0) name = QString("Calque %1").arg(ci);
+        QListWidgetItem *it = new QListWidgetItem();
+        QWidget *w = new QWidget();
+        QVBoxLayout *lay = new QVBoxLayout(w);
+        lay->setContentsMargins(4,4,4,4);
+        QLineEdit *nameEdit = new QLineEdit(name, w);
+        nameEdit->setObjectName("layerName");
+        nameEdit->setAlignment(Qt::AlignCenter);
+        nameEdit->setFrame(false);
+        QLabel *thumb = new QLabel(w);
+        thumb->setObjectName("layerThumb");
+        thumb->setAlignment(Qt::AlignCenter);
+        QPixmap px = ui->canvas->layerThumbnail(ci, QSize(200,140));
+        if (!px.isNull()) thumb->setPixmap(px);
+        lay->addWidget(nameEdit);
+        lay->addWidget(thumb);
+        w->setLayout(lay);
+        it->setSizeHint(QSize(200,220));
+        ui->layersList->addItem(it);
+        ui->layersList->setItemWidget(it, w);
+        connect(nameEdit, &QLineEdit::editingFinished, this, [this, nameEdit]{ /* name stored in widget only */ });
+    }
+    // Select the UI row corresponding to the active canvas layer
+    int activeIdx = ui->canvas->activeLayer();
+    int uiRow = (activeIdx < 0) ? -1 : (ui->layersList->count() - 1 - activeIdx);
+    if (uiRow >= 0) ui->layersList->setCurrentRow(uiRow);
+}
+
+void MainWindow::onLayerUpdated(int index)
+{
+    if (!ui->canvas || !ui->layersList) return;
+    if (index < 0 || index >= ui->canvas->layerCount()) return;
+    // Map canvas layer index to UI row (reversed)
+    int uiRow = ui->layersList->count() - 1 - index;
+    if (uiRow < 0 || uiRow >= ui->layersList->count()) return;
+    QListWidgetItem *it = ui->layersList->item(uiRow);
+    if (!it) return;
+    QWidget *w = ui->layersList->itemWidget(it);
+    if (w) {
+        QLabel *thumb = w->findChild<QLabel*>("layerThumb");
+        if (thumb) {
+            QPixmap px = ui->canvas->layerThumbnail(index, QSize(200,140));
+            if (!px.isNull()) thumb->setPixmap(px);
+        }
+    } else {
+        QPixmap thumb = ui->canvas->layerThumbnail(index, QSize(64,64));
+        if (!thumb.isNull()) ui->layersList->item(uiRow)->setIcon(QIcon(thumb));
     }
 }
 

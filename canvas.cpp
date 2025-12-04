@@ -1,6 +1,8 @@
 #include "canvas.h"
 #include <QPainter>
 
+#include <QPixmap>
+
 #include <QString>
 
 #include <QImage>
@@ -12,8 +14,16 @@ Canvas::Canvas(QWidget *parent)
     brushSize(3)
 {
     // Initialiser l'image avec une taille par défaut
-    image = QImage(800, 600, QImage::Format_RGB32);
+    image = QImage(800, 600, QImage::Format_ARGB32);
     image.fill(Qt::white);
+
+    // Initialize base layer and layer stack
+    layers.clear();
+    QImage baseLayer(image.size(), QImage::Format_ARGB32);
+    baseLayer.fill(Qt::white);
+    layers.append(baseLayer);
+    activeLayerIndex = 0;
+    lastInsertedLayerIndex = -1;
 
     // Sauvegarder l'état initial
     saveState();
@@ -35,8 +45,21 @@ Canvas::~Canvas()
 void Canvas::paintEvent(QPaintEvent *event)
 {
     QPainter painter(this);
-    QRect dirtyRect = event->rect();
-    painter.drawImage(dirtyRect, image, dirtyRect);
+    Q_UNUSED(event);
+
+    // Composite all layers into a temporary image and draw it
+    if (layers.isEmpty()) {
+        // nothing to draw
+        return;
+    }
+    QImage composed(layers[0].size(), QImage::Format_ARGB32);
+    composed.fill(Qt::white);
+    QPainter compPainter(&composed);
+    for (const QImage &layer : layers) {
+        if (!layer.isNull()) compPainter.drawImage(0, 0, layer);
+    }
+    compPainter.end();
+    painter.drawImage(0, 0, composed);
     // Draw active image on top if present
     if (hasActiveImage && !activeImage.isNull()) {
         painter.drawImage(activeImagePos, activeImage);
@@ -59,8 +82,10 @@ void Canvas::mousePressEvent(QMouseEvent *event)
     // Handle bucket fill: fill entire canvas with brushColor
     if (event->button() == Qt::LeftButton) {
         if (currentTool == "toolBucketButton") {
-            // Fill the whole image with the current brush color
-            image.fill(brushColor);
+            // Fill the active layer with the current brush color
+            if (activeLayerIndex >= 0 && activeLayerIndex < layers.size()) {
+                layers[activeLayerIndex].fill(brushColor);
+            }
             // Save state after fill for undo/redo consistency
             saveState();
             update();
@@ -84,11 +109,13 @@ void Canvas::mousePressEvent(QMouseEvent *event)
                 if (lastInsertedRect.contains(event->pos())) {
                     // Save current state so extraction is undoable
                     saveState();
-                    // Extract the last inserted region from the main image into activeImage
-                    activeImage = image.copy(lastInsertedRect);
-                    // Clear that area on the main image (fill with white)
-                    QPainter p(&image);
-                    p.fillRect(lastInsertedRect, Qt::white);
+                    // Extract the last inserted region from its layer into activeImage
+                    if (lastInsertedLayerIndex >= 0 && lastInsertedLayerIndex < layers.size()) {
+                        activeImage = layers[lastInsertedLayerIndex].copy(lastInsertedRect);
+                        // Clear that area on that layer (fill with transparency/white)
+                        QPainter p(&layers[lastInsertedLayerIndex]);
+                        p.fillRect(lastInsertedRect, Qt::transparent);
+                    }
                     // Set active image position and flags
                     activeImagePos = lastInsertedRect.topLeft();
                     hasActiveImage = true;
@@ -129,10 +156,11 @@ void Canvas::mousePressEvent(QMouseEvent *event)
                 if (lastInsertedRect.contains(event->pos())) {
                     // Extract last inserted into activeImage for resizing
                     saveState();
-                    activeImage = image.copy(lastInsertedRect);
-                    // Clear area on main image
-                    QPainter p(&image);
-                    p.fillRect(lastInsertedRect, Qt::white);
+                    if (lastInsertedLayerIndex >= 0 && lastInsertedLayerIndex < layers.size()) {
+                        activeImage = layers[lastInsertedLayerIndex].copy(lastInsertedRect);
+                        QPainter p(&layers[lastInsertedLayerIndex]);
+                        p.fillRect(lastInsertedRect, Qt::transparent);
+                    }
                     activeImagePos = lastInsertedRect.topLeft();
                     hasActiveImage = true;
                     resizingActiveImage = true;
@@ -149,6 +177,8 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         if (currentTool == "toolBrushButton" ||
             currentTool.compare("brush", Qt::CaseInsensitive) == 0 ||
             currentTool == "toolEraserButton") {
+            // Start a new layer for this drawing action so each action is isolated
+            addLayer();
             lastPoint = event->pos();
             drawing = true;
         }
@@ -212,19 +242,32 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
 
 void Canvas::drawLineTo(const QPoint &endPoint)
 {
-    QPainter painter(&image);
 
-    // If eraser is active, draw with background color (white) to "erase";
-    // otherwise draw with brush color. The brushSize is shared between tools.
-    QColor penColor = (currentTool == "toolEraserButton") ? Qt::white : brushColor;
-    QPen pen(penColor, brushSize, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-    painter.setPen(pen);
-    painter.drawLine(lastPoint, endPoint);
+    // Ensure we have a valid active layer
+    if (activeLayerIndex < 0 || activeLayerIndex >= layers.size()) return;
+
+    QPainter painter(&layers[activeLayerIndex]);
+
+    // If eraser is active, use clear composition so it reveals lower layers
+    if (currentTool == "toolEraserButton") {
+        painter.setCompositionMode(QPainter::CompositionMode_Clear);
+        QPen pen(Qt::transparent, brushSize, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        painter.setPen(pen);
+        painter.drawLine(lastPoint, endPoint);
+        painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    } else {
+        QColor penColor = brushColor;
+        QPen pen(penColor, brushSize, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        painter.setPen(pen);
+        painter.drawLine(lastPoint, endPoint);
+    }
 
     // Mettre à jour l'affichage avec la nouvelle taille du pinceau
     int rad = brushSize / 2 + 2;
     update(QRect(lastPoint, endPoint).normalized().adjusted(-rad, -rad, +rad, +rad));
     lastPoint = endPoint;
+    // notify UI that active layer changed (for thumbnail updates)
+    emit layerUpdated(activeLayerIndex);
 }
 
 void Canvas::saveState()
@@ -234,40 +277,45 @@ void Canvas::saveState()
         undoStack.removeFirst();
     }
 
-    undoStack.push(image.copy());
+    // Push a deep copy of layers
+    QVector<QImage> snapshot;
+    snapshot.reserve(layers.size());
+    for (const QImage &L : layers) snapshot.append(L.copy());
+    undoStack.push(snapshot);
 
-    // Vider la pile redo quand une nouvelle action est effectuée
+    // Clear redo stack
     redoStack.clear();
 }
 
 void Canvas::undo()
 {
-    if (undoStack.isEmpty()) {
-        return;
-    }
+    if (undoStack.isEmpty()) return;
 
-    // Sauvegarder l'état actuel dans la pile redo
-    redoStack.push(image.copy());
+    // save current layers to redo
+    QVector<QImage> current;
+    for (const QImage &L : layers) current.append(L.copy());
+    redoStack.push(current);
 
-    // Restaurer l'état précédent
-    image = undoStack.pop();
-
+    // restore previous
+    layers = undoStack.pop();
+    // ensure activeLayerIndex still valid
+    if (activeLayerIndex >= layers.size()) activeLayerIndex = layers.size() - 1;
     update();
+    emit layersChanged();
 }
 
 void Canvas::redo()
 {
-    if (redoStack.isEmpty()) {
-        return;
-    }
+    if (redoStack.isEmpty()) return;
 
-    // Sauvegarder l'état actuel dans la pile undo
-    undoStack.push(image.copy());
+    QVector<QImage> current;
+    for (const QImage &L : layers) current.append(L.copy());
+    undoStack.push(current);
 
-    // Restaurer l'état suivant
-    image = redoStack.pop();
-
+    layers = redoStack.pop();
+    if (activeLayerIndex >= layers.size()) activeLayerIndex = layers.size() - 1;
     update();
+    emit layersChanged();
 }
 
 void Canvas::insertImageCentered(const QImage &img)
@@ -277,8 +325,8 @@ void Canvas::insertImageCentered(const QImage &img)
     // Prepare the image to insert: scale down if larger than canvas image
     // We scale to fit within 90% of the canvas to leave a small margin.
     QImage toDraw = img;
-    int canvasW = image.width();
-    int canvasH = image.height();
+    int canvasW = layers.isEmpty() ? image.width() : layers[0].width();
+    int canvasH = layers.isEmpty() ? image.height() : layers[0].height();
     if (canvasW <= 0 || canvasH <= 0) return;
     int maxW = std::max(1, canvasW * 9 / 10);
     int maxH = std::max(1, canvasH * 9 / 10);
@@ -288,10 +336,12 @@ void Canvas::insertImageCentered(const QImage &img)
     }
 
     // Calculate top-left to center the inserted image
-    int x = (image.width() - toDraw.width()) / 2;
-    int y = (image.height() - toDraw.height()) / 2;
+    int x = (canvasW - toDraw.width()) / 2;
+    int y = (canvasH - toDraw.height()) / 2;
 
     // Set as active image so it can be moved before flattening
+    // Create a new layer for the inserted image so it sits above previous content
+    addLayer();
     activeImage = toDraw;
     activeImagePos = QPoint(x, y);
     hasActiveImage = true;
@@ -306,24 +356,24 @@ bool Canvas::loadFromFile(const QString &path)
     QImage img;
     if (!img.load(path)) return false;
 
-    // If image is the same size as canvas, set directly
-    if (img.size() == image.size()) {
-        image = img.convertToFormat(QImage::Format_RGB32);
-    } else {
-        // Create a white background image the same size as the canvas
-        QImage background(image.size(), QImage::Format_RGB32);
-        background.fill(Qt::white);
+    // Create a background image sized to our canvas (use existing layer size if present)
+    QSize canvasSize = image.size();
+    if (!layers.isEmpty()) canvasSize = layers[0].size();
 
-        // Scale the loaded image to fit into the canvas while preserving aspect ratio
-        QImage scaled = img.scaled(image.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QImage background(canvasSize, QImage::Format_ARGB32);
+    background.fill(Qt::white);
 
-        // Center the scaled image on the white background
-        QPoint topLeft((background.width() - scaled.width()) / 2,
-                       (background.height() - scaled.height()) / 2);
-        QPainter p(&background);
-        p.drawImage(topLeft, scaled);
-        image = background;
-    }
+    // Scale the loaded image to fit into the canvas while preserving aspect ratio
+    QImage scaled = img.scaled(canvasSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QPoint topLeft((background.width() - scaled.width()) / 2,
+                   (background.height() - scaled.height()) / 2);
+    QPainter p(&background);
+    p.drawImage(topLeft, scaled);
+
+    // Replace layers with a single background layer
+    layers.clear();
+    layers.append(background);
+    activeLayerIndex = 0;
 
     // Clear any active image state since we replaced the canvas content
     activeImage = QImage();
@@ -334,39 +384,107 @@ bool Canvas::loadFromFile(const QString &path)
     // Save state for undo/redo and update display
     saveState();
     update();
+    emit layersChanged();
     return true;
 }
 
 void Canvas::flattenActiveImage()
 {
     if (!hasActiveImage || activeImage.isNull()) return;
-    QPainter painter(&image);
+    if (activeLayerIndex < 0 || activeLayerIndex >= layers.size()) return;
+
+    QPainter painter(&layers[activeLayerIndex]);
     painter.drawImage(activeImagePos, activeImage);
     // After flattening, save state for undo/redo
     saveState();
-    // Clear active image
     // Remember this inserted image so it can be re-selected later
     lastInsertedImage = activeImage.copy();
     lastInsertedRect = QRect(activeImagePos, activeImage.size());
     hasLastInserted = true;
+    lastInsertedLayerIndex = activeLayerIndex;
 
     activeImage = QImage();
     hasActiveImage = false;
+    emit layersChanged();
 }
 
 bool Canvas::saveToFile(const QString &path, const char *format)
 {
     if (path.isEmpty()) return false;
 
-    // Create a copy of the current image so we don't modify the in-memory canvas.
-    QImage out = image;
+    if (layers.isEmpty()) return false;
 
-    // If there's an active image (not yet flattened), draw it on top for export.
+    QImage out(layers[0].size(), QImage::Format_ARGB32);
+    out.fill(Qt::white);
+    QPainter p(&out);
+    for (const QImage &layer : layers) {
+        if (!layer.isNull()) p.drawImage(0, 0, layer);
+    }
+    // Draw active image on top if present
     if (hasActiveImage && !activeImage.isNull()) {
-        QPainter p(&out);
         p.drawImage(activeImagePos, activeImage);
     }
+    p.end();
 
-    // Let QImage decide the format from the extension if format == nullptr
     return out.save(path, format);
+}
+
+void Canvas::addLayer()
+{
+    QSize sz = (layers.isEmpty() ? image.size() : layers[0].size());
+    // Compose existing layers into a single image so the new layer starts
+    // prefilled with previous actions (chronological accumulation).
+    QImage composed(sz, QImage::Format_ARGB32);
+    composed.fill(Qt::transparent);
+    QPainter painter(&composed);
+    for (const QImage &L : layers) {
+        if (!L.isNull()) painter.drawImage(0, 0, L);
+    }
+    painter.end();
+
+    // The new layer starts as the composed result of prior layers
+    QImage newLayer = composed;
+    // Append so layers are in chronological order: index 0 = first action,
+    // index 1 = second action, etc. New layer becomes the last (top) layer.
+    layers.append(newLayer);
+    // New layer is the last index
+    activeLayerIndex = layers.size() - 1;
+    saveState();
+    update();
+    emit layersChanged();
+}
+
+void Canvas::setActiveLayer(int index)
+{
+    if (index < 0 || index >= layers.size()) return;
+    activeLayerIndex = index;
+    emit layerUpdated(index);
+}
+
+int Canvas::layerCount() const
+{
+    return layers.size();
+}
+
+int Canvas::activeLayer() const
+{
+    return activeLayerIndex;
+}
+
+QPixmap Canvas::layerThumbnail(int index, const QSize &size) const
+{
+    if (index < 0 || index >= layers.size()) return QPixmap();
+    QImage img = layers[index];
+    if (img.isNull()) return QPixmap();
+    // Scale the layer while preserving aspect ratio, then composite it on a
+    // white background so transparent areas appear as white (not gray).
+    QImage scaled = img.scaled(size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QImage out(size.width(), size.height(), QImage::Format_ARGB32);
+    out.fill(Qt::white);
+    QPainter p(&out);
+    int x = (size.width() - scaled.width()) / 2;
+    int y = (size.height() - scaled.height()) / 2;
+    p.drawImage(x, y, scaled);
+    p.end();
+    return QPixmap::fromImage(out);
 }

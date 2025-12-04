@@ -7,6 +7,7 @@
 #include <QMouseEvent>
 #include <QColor>
 #include <QStack>
+#include <QVector>
 #include <QString>
 
 class Canvas : public QWidget
@@ -16,6 +17,12 @@ class Canvas : public QWidget
 public:
     explicit Canvas(QWidget *parent = nullptr);
     ~Canvas();
+    // Layer control
+    void addLayer();
+    void setActiveLayer(int index);
+    int layerCount() const;
+    int activeLayer() const;
+    QPixmap layerThumbnail(int index, const QSize &size) const;
 
     // Getters
     QColor getBrushColor() const { return brushColor; }
@@ -63,10 +70,14 @@ private:
     QColor brushColor;
     int brushSize;
 
-    // Historique pour undo/redo
-    QStack<QImage> undoStack;
-    QStack<QImage> redoStack;
+    // Historique pour undo/redo -- store full layer snapshots
+    QStack<QVector<QImage>> undoStack;
+    QStack<QVector<QImage>> redoStack;
     void saveState();
+
+    // Layers
+    QVector<QImage> layers;
+    int activeLayerIndex;
 
     void drawLineTo(const QPoint &endPoint);
     QString currentTool;
@@ -82,10 +93,14 @@ private:
     QImage lastInsertedImage;
     QRect lastInsertedRect;
     bool hasLastInserted;
+    int lastInsertedLayerIndex;
     // Resize state for Area tool
     bool resizingActiveImage;
     QImage activeImageOriginal;
     QSize originalActiveSize;
+signals:
+    void layersChanged();
+    void layerUpdated(int index);
 };
 
 #endif // CANVAS_H

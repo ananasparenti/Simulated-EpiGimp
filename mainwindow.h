@@ -74,6 +74,11 @@ private slots:
     void onSelectBrushTool();
     void onToggleBrushSizeVisibility();
     void onHelpDocumentation();
+    // Layers UI
+    void onAddLayerClicked();
+    void onLayerSelectionChanged();
+    void onLayersChanged();
+    void onLayerUpdated(int index);
 };
 
 #endif // MAINWINDOW_H
