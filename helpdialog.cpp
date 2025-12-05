@@ -40,24 +40,7 @@ HelpDialog::HelpDialog(QWidget *parent)
     openFullDocsButton->setStyleSheet("QPushButton { padding: 8px 16px; background-color: #0078d7; color: white; border: none; border-radius: 4px; font-weight: bold; } QPushButton:hover { background-color: #005a9e; }");
     connect(openFullDocsButton, &QPushButton::clicked, this, []() {
         // 1) Try local docsify server at 127.0.0.1:3000
-        QTcpSocket socket;
-        socket.connectToHost("127.0.0.1", 3000);
-        bool serverUp = socket.waitForConnected(200);
-        if (serverUp) {
-            QDesktopServices::openUrl(QUrl("http://127.0.0.1:3000/"));
-            socket.disconnectFromHost();
-            return;
-        }
 
-        // 2) Try local docs file next to the application
-        QString docsPath = QCoreApplication::applicationDirPath() + "/../docs/index.html";
-        QFileInfo fi(docsPath);
-        if (fi.exists() && fi.isFile()) {
-            QDesktopServices::openUrl(QUrl::fromLocalFile(QDir::toNativeSeparators(fi.absoluteFilePath())));
-            return;
-        }
-
-        // 3) Fallback to the Docsify hosted site
         QDesktopServices::openUrl(QUrl("https://ananasparenti.github.io/Simulated-EpiGimp/"));
     });
 

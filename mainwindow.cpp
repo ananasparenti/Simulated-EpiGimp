@@ -23,6 +23,9 @@
 #include <QCoreApplication>
 #include <QListWidget>
 #include <QLineEdit>
+#include <QTabBar>
+#include <QStackedWidget>
+#include "project.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -30,6 +33,13 @@ MainWindow::MainWindow(QWidget *parent)
     ui = new Ui::MainWindow;
     ui->setupUi(this);
 
+    // Create project UI: a tab bar and a stacked widget to host per-project canvases
+    projectBar = new QTabBar(this);
+    projectBar->setExpanding(false);
+    projectBar->setMovable(true);
+    projectStack = new QStackedWidget(this);
+    // Insert projectBar at the top of the central vertical layout
+    if (ui->verticalLayout) ui->verticalLayout->insertWidget(0, projectBar);
     createActions();
     createMenus();
 
@@ -55,21 +65,46 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Default: no tool selected (drawing disabled until brush selected)
     currentTool = "";
-    if (ui->canvas) ui->canvas->setTool(currentTool);
+    if (activeCanvas()) activeCanvas()->setTool(currentTool);
 
     updateUndoRedoActions();
 
     // Initialize layers UI if present
     if (ui->addLayerButton) connect(ui->addLayerButton, &QPushButton::clicked, this, &MainWindow::onAddLayerClicked);
     if (ui->layersList) connect(ui->layersList, &QListWidget::currentRowChanged, this, &MainWindow::onLayerSelectionChanged);
-    // Canvas layer signals -> UI updates
-    if (ui->canvas) {
+    // Replace existing canvas widget with a stacked widget so each project can own a canvas.
+    if (ui->canvas && projectStack) {
+        QWidget *parentW = ui->canvas->parentWidget();
+        QLayout *parentLayout = parentW ? parentW->layout() : nullptr;
+        int idx = -1;
+        if (parentLayout) idx = parentLayout->indexOf(ui->canvas);
+        if (parentLayout) parentLayout->removeWidget(ui->canvas);
+        projectStack->addWidget(ui->canvas);
+        if (parentLayout) {
+            // QLayout doesn't expose insertWidget; try casting to QBoxLayout for insertion
+            QBoxLayout *box = qobject_cast<QBoxLayout*>(parentLayout);
+            if (box) {
+                if (idx >= 0) box->insertWidget(idx, projectStack); else box->addWidget(projectStack);
+            } else {
+                parentLayout->addWidget(projectStack);
+            }
+        }
+
+        // Create initial project from the canvas defined in UI
+        Project *p = new Project(tr("Untitled 1"), ui->canvas);
+        projects.append(p);
+        projectBar->addTab(p->name());
+        projectStack->setCurrentWidget(ui->canvas);
+        // connect canvas signals
         connect(ui->canvas, &Canvas::layersChanged, this, &MainWindow::onLayersChanged);
         connect(ui->canvas, &Canvas::layerUpdated, this, &MainWindow::onLayerUpdated);
     }
-    // populate initial layers list from canvas (use custom widget: name above thumbnail)
-    if (ui->canvas && ui->layersList) {
-        int count = ui->canvas->layerCount();
+
+    // When user changes project tab, switch stacked widget and refresh UI
+    if (projectBar) connect(projectBar, &QTabBar::currentChanged, this, &MainWindow::onProjectTabChanged);
+    // populate initial layers list from active canvas
+    if (activeCanvas() && ui->layersList) {
+        int count = activeCanvas()->layerCount();
         ui->layersList->clear();
         // display topmost layer first (reverse order) so the newest/bottom layer
         // appears at the bottom of the list.
@@ -86,7 +121,7 @@ MainWindow::MainWindow(QWidget *parent)
             QLabel *thumb = new QLabel(w);
             thumb->setObjectName("layerThumb");
             thumb->setAlignment(Qt::AlignCenter);
-            QPixmap px = ui->canvas->layerThumbnail(i, QSize(200,140));
+            QPixmap px = activeCanvas()->layerThumbnail(i, QSize(200,140));
             if (!px.isNull()) thumb->setPixmap(px);
             lay->addWidget(nameEdit);
             lay->addWidget(thumb);
@@ -98,10 +133,55 @@ MainWindow::MainWindow(QWidget *parent)
             connect(nameEdit, &QLineEdit::editingFinished, this, [this, nameEdit]{ /* name stored in widget only */ });
         }
         // Map active layer index (canvas index) to UI row (reversed)
-        int activeIdx = ui->canvas->activeLayer();
+        int activeIdx = activeCanvas()->activeLayer();
         int uiRow = (activeIdx < 0) ? -1 : (ui->layersList->count() - 1 - activeIdx);
         if (uiRow >= 0) ui->layersList->setCurrentRow(uiRow);
     }
+}
+
+Canvas* MainWindow::activeCanvas() const
+{
+    if (projectStack && projectStack->currentWidget()) return qobject_cast<Canvas*>(projectStack->currentWidget());
+    return nullptr;
+}
+
+void MainWindow::createProject(const QString &name)
+{
+    // Create a new Canvas instance for the project
+    Canvas *c = new Canvas(this);
+    // Try match existing canvas size if available
+    if (!projects.isEmpty() && projects.first()->canvas()) {
+        QSize s = projects.first()->canvas()->size();
+        c->setMinimumSize(s);
+    } else {
+        c->setMinimumSize(800, 600);
+    }
+    projectStack->addWidget(c);
+    QString nm = name;
+    if (nm.isEmpty()) nm = tr("Untitled %1").arg(projects.size() + 1);
+    Project *p = new Project(nm, c);
+    projects.append(p);
+    projectBar->addTab(p->name());
+    projectBar->setCurrentIndex(projectBar->count() - 1);
+    projectStack->setCurrentWidget(c);
+    // Connect signals so UI updates when the project's canvas changes
+    connect(c, &Canvas::layersChanged, this, &MainWindow::onLayersChanged);
+    connect(c, &Canvas::layerUpdated, this, &MainWindow::onLayerUpdated);
+    // Refresh UI
+    onLayersChanged();
+    updateUndoRedoActions();
+}
+
+void MainWindow::onProjectTabChanged(int index)
+{
+    if (index < 0 || index >= projectBar->count()) return;
+    QWidget *w = projectStack->widget(index);
+    if (w) projectStack->setCurrentWidget(w);
+    // Refresh layer UI and undo/redo
+    onLayersChanged();
+    updateUndoRedoActions();
+    // Update window title to reflect project
+    if (index >=0 && index < projects.size()) setWindowTitle(projects[index]->name());
 }
 
 MainWindow::~MainWindow()
@@ -187,7 +267,7 @@ void MainWindow::createToolbar()
     QWidget *sizeWidget = new QWidget(this);
     QVBoxLayout *sizeLayout = new QVBoxLayout(sizeWidget);
     sizeLayout->setContentsMargins(8,8,8,8);
-    int currentBrush = ui->canvas ? ui->canvas->getBrushSize() : 3;
+    int currentBrush = activeCanvas() ? activeCanvas()->getBrushSize() : 3;
     popupBrushSizeLabel = new QLabel(QString("%1 px").arg(currentBrush), sizeWidget);
     popupBrushSizeLabel->setAlignment(Qt::AlignCenter);
     popupBrushSizeSlider = new QSlider(Qt::Horizontal, sizeWidget);
@@ -259,7 +339,7 @@ void MainWindow::onToolButtonClicked()
             if (!img.load(file)) {
                 QMessageBox::warning(this, tr("Erreur"), tr("Impossible de charger l'image."));
             } else {
-                if (ui->canvas) ui->canvas->insertImageCentered(img);
+                if (activeCanvas()) activeCanvas()->insertImageCentered(img);
                 updateUndoRedoActions();
             }
         }
@@ -269,7 +349,7 @@ void MainWindow::onToolButtonClicked()
         // Show the brush size popup next to the button
         if (QPushButton *btn = qobject_cast<QPushButton*>(sender())) {
             // sync popup slider/label with current canvas value
-            int current = ui->canvas ? ui->canvas->getBrushSize() : 3;
+            int current = activeCanvas() ? activeCanvas()->getBrushSize() : 3;
             if (popupBrushSizeSlider) popupBrushSizeSlider->setValue(current);
             if (popupBrushSizeLabel) popupBrushSizeLabel->setText(QString("%1 px").arg(current));
             if (brushSizeMenu) {
@@ -284,10 +364,10 @@ void MainWindow::onToolButtonClicked()
     currentTool = name;
 
     // Inform canvas which tool is active so it can enable/disable drawing
-    if (ui->canvas) ui->canvas->setTool(currentTool);
+    if (activeCanvas()) activeCanvas()->setTool(currentTool);
 
     // Inform canvas which tool is active so it can enable/disable drawing
-    if (ui->canvas) ui->canvas->setTool(currentTool);
+    if (activeCanvas()) activeCanvas()->setTool(currentTool);
 
     // visual feedback: highlight selected button and clear others
     QStringList allToolNames = {"toolBrushButton","toolColorButtonLeft","toolSizeButton","toolEraserButton","toolAreaButton","toolBucketButton","toolMoveButton"};
@@ -300,26 +380,26 @@ void MainWindow::onToolButtonClicked()
     }
 
     // set cursor for draw tools
-    if (name == "toolBrushButton") {
-        if (ui->canvas) ui->canvas->setCursor(Qt::CrossCursor);
+        if (name == "toolBrushButton") {
+        if (activeCanvas()) activeCanvas()->setCursor(Qt::CrossCursor);
     } else if (name == "toolEraserButton") {
-        if (ui->canvas) ui->canvas->setCursor(Qt::ClosedHandCursor);
+        if (activeCanvas()) activeCanvas()->setCursor(Qt::ClosedHandCursor);
     } else {
-        if (ui->canvas) ui->canvas->unsetCursor();
+        if (activeCanvas()) activeCanvas()->unsetCursor();
     }
 }
 
 // Layers handling
 void MainWindow::onAddLayerClicked()
 {
-    if (!ui->canvas) return;
-    ui->canvas->addLayer();
+    if (!activeCanvas()) return;
+    activeCanvas()->addLayer();
     // refresh list
     if (ui->layersList) {
         // Rebuild the list so order remains consistent (topmost first)
         onLayersChanged();
         // Map active layer index to UI row and select it
-        int activeIdx = ui->canvas->activeLayer();
+        int activeIdx = activeCanvas()->activeLayer();
         int uiRow = (activeIdx < 0) ? -1 : (ui->layersList->count() - 1 - activeIdx);
         if (uiRow >= 0) ui->layersList->setCurrentRow(uiRow);
     }
@@ -327,19 +407,19 @@ void MainWindow::onAddLayerClicked()
 
 void MainWindow::onLayerSelectionChanged()
 {
-    if (!ui->canvas || !ui->layersList) return;
+    if (!activeCanvas() || !ui->layersList) return;
     int idx = ui->layersList->currentRow();
-    if (idx >= 0 && idx < ui->canvas->layerCount()) {
+    if (idx >= 0 && idx < activeCanvas()->layerCount()) {
         // Map UI row (0=topmost) to canvas layer index (0=bottom)
-        int layerIdx = ui->canvas->layerCount() - 1 - idx;
-        ui->canvas->setActiveLayer(layerIdx);
+        int layerIdx = activeCanvas()->layerCount() - 1 - idx;
+        activeCanvas()->setActiveLayer(layerIdx);
     }
 }
 
 void MainWindow::onLayersChanged()
 {
-    if (!ui->canvas || !ui->layersList) return;
-    int count = ui->canvas->layerCount();
+    if (!activeCanvas() || !ui->layersList) return;
+    int count = activeCanvas()->layerCount();
     // rebuild list preserving any user-edited names
     QStringList currentNames;
     // extract existing names from custom widgets if present
@@ -375,7 +455,7 @@ void MainWindow::onLayersChanged()
         QLabel *thumb = new QLabel(w);
         thumb->setObjectName("layerThumb");
         thumb->setAlignment(Qt::AlignCenter);
-        QPixmap px = ui->canvas->layerThumbnail(ci, QSize(200,140));
+        QPixmap px = activeCanvas()->layerThumbnail(ci, QSize(200,140));
         if (!px.isNull()) thumb->setPixmap(px);
         lay->addWidget(nameEdit);
         lay->addWidget(thumb);
@@ -386,15 +466,15 @@ void MainWindow::onLayersChanged()
         connect(nameEdit, &QLineEdit::editingFinished, this, [this, nameEdit]{ /* name stored in widget only */ });
     }
     // Select the UI row corresponding to the active canvas layer
-    int activeIdx = ui->canvas->activeLayer();
+    int activeIdx = activeCanvas()->activeLayer();
     int uiRow = (activeIdx < 0) ? -1 : (ui->layersList->count() - 1 - activeIdx);
     if (uiRow >= 0) ui->layersList->setCurrentRow(uiRow);
 }
 
 void MainWindow::onLayerUpdated(int index)
 {
-    if (!ui->canvas || !ui->layersList) return;
-    if (index < 0 || index >= ui->canvas->layerCount()) return;
+    if (!activeCanvas() || !ui->layersList) return;
+    if (index < 0 || index >= activeCanvas()->layerCount()) return;
     // Map canvas layer index to UI row (reversed)
     int uiRow = ui->layersList->count() - 1 - index;
     if (uiRow < 0 || uiRow >= ui->layersList->count()) return;
@@ -404,11 +484,11 @@ void MainWindow::onLayerUpdated(int index)
     if (w) {
         QLabel *thumb = w->findChild<QLabel*>("layerThumb");
         if (thumb) {
-            QPixmap px = ui->canvas->layerThumbnail(index, QSize(200,140));
+            QPixmap px = activeCanvas()->layerThumbnail(index, QSize(200,140));
             if (!px.isNull()) thumb->setPixmap(px);
         }
     } else {
-        QPixmap thumb = ui->canvas->layerThumbnail(index, QSize(64,64));
+        QPixmap thumb = activeCanvas()->layerThumbnail(index, QSize(64,64));
         if (!thumb.isNull()) ui->layersList->item(uiRow)->setIcon(QIcon(thumb));
     }
 }
@@ -421,8 +501,8 @@ void MainWindow::onSelectBrushTool()
     if (ui->toolBrushButton) ui->toolBrushButton->setStyleSheet("border:2px solid #0078d7; background: rgba(0,0,0,0%);");
     if (ui->toolColorButtonLeft) ui->toolColorButtonLeft->setStyleSheet("");
     if (ui->toolSizeButton) ui->toolSizeButton->setStyleSheet("");
-    if (ui->canvas) ui->canvas->setCursor(Qt::CrossCursor);
-    if (ui->canvas) ui->canvas->setTool(currentTool);
+    if (activeCanvas()) activeCanvas()->setCursor(Qt::CrossCursor);
+    if (activeCanvas()) activeCanvas()->setTool(currentTool);
 }
 
 void MainWindow::onToggleBrushSizeVisibility()
@@ -436,9 +516,9 @@ void MainWindow::onToggleBrushSizeVisibility()
 
 void MainWindow::updateUndoRedoActions()
 {
-    if (ui->canvas) {
-        undoAction->setEnabled(ui->canvas->canUndo());
-        redoAction->setEnabled(ui->canvas->canRedo());
+    if (activeCanvas()) {
+        undoAction->setEnabled(activeCanvas()->canUndo());
+        redoAction->setEnabled(activeCanvas()->canRedo());
     } else {
         undoAction->setEnabled(false);
         redoAction->setEnabled(false);
@@ -448,14 +528,15 @@ void MainWindow::updateUndoRedoActions()
 // Slots
 void MainWindow::onNew()
 {
-    QMessageBox::information(this, "Nouveau", "Créer un nouveau projet");
+    // Create a new untitled project via shortcut/menu
+    createProject();
 }
 
 void MainWindow::onOpen()
 {
-    if (!ui->canvas) {
-        QMessageBox::warning(this, tr("Erreur"), tr("Aucun canvas disponible."));
-        return;
+    if (activeCanvas()) {
+        connect(activeCanvas(), &Canvas::layersChanged, this, &MainWindow::onLayersChanged);
+        connect(activeCanvas(), &Canvas::layerUpdated, this, &MainWindow::onLayerUpdated);
     }
 
     QString file = QFileDialog::getOpenFileName(this, tr("Ouvrir une image"), QString(),
@@ -470,13 +551,13 @@ void MainWindow::onOpen()
 
     // Insert the image as an active image centered on the canvas so the user
     // can move/resize it before flattening.
-    if (ui->canvas) ui->canvas->insertImageCentered(img);
+    if (activeCanvas()) activeCanvas()->insertImageCentered(img);
     updateUndoRedoActions();
 }
 
 void MainWindow::onSave()
 {
-    if (!ui->canvas) {
+    if (!activeCanvas()) {
         QMessageBox::warning(this, tr("Erreur"), tr("Aucun canvas disponible à enregistrer."));
         return;
     }
@@ -494,7 +575,7 @@ void MainWindow::onSave()
     else if (fileName.endsWith(".bmp", Qt::CaseInsensitive)) fmt = "BMP";
     else fmt = "PNG";
 
-    bool ok = ui->canvas->saveToFile(fileName, fmt.constData());
+    bool ok = activeCanvas()->saveToFile(fileName, fmt.constData());
     if (!ok) {
         QMessageBox::warning(this, tr("Erreur"), tr("Impossible d'enregistrer le fichier."));
     } else {
@@ -509,23 +590,23 @@ void MainWindow::onExit()
 
 void MainWindow::onUndo()
 {
-    if (ui->canvas) ui->canvas->undo();
+    if (activeCanvas()) activeCanvas()->undo();
     updateUndoRedoActions();
 }
 
 void MainWindow::onRedo()
 {
-    if (ui->canvas) ui->canvas->redo();
+    if (activeCanvas()) activeCanvas()->redo();
     updateUndoRedoActions();
 }
 
 void MainWindow::onColorButtonClicked()
 {
-    QColor color = QColorDialog::getColor(ui->canvas ? ui->canvas->getBrushColor() : Qt::black,
+    QColor color = QColorDialog::getColor(activeCanvas() ? activeCanvas()->getBrushColor() : Qt::black,
                                           this, tr("Choisir une couleur"));
 
     if (color.isValid()) {
-        if (ui->canvas) ui->canvas->setBrushColor(color);
+        if (activeCanvas()) activeCanvas()->setBrushColor(color);
         if (ui->colorButton) ui->colorButton->setStyleSheet(QString("background-color: %1; border: 2px solid gray;")
                                                                .arg(color.name()));
     }
@@ -533,32 +614,13 @@ void MainWindow::onColorButtonClicked()
 
 void MainWindow::onBrushSizeChanged(int size)
 {
-    if (ui->canvas) ui->canvas->setBrushSize(size);
+    if (activeCanvas()) activeCanvas()->setBrushSize(size);
     // update popup label if present
     if (popupBrushSizeLabel) popupBrushSizeLabel->setText(QString("%1 px").arg(size));
 }
 
 void MainWindow::onHelpDocumentation()
 {
-    // 1) Try local docsify server at 127.0.0.1:3000
-    QTcpSocket socket;
-    socket.connectToHost("127.0.0.1", 3000);
-    bool serverUp = socket.waitForConnected(200);
-    if (serverUp) {
-        QDesktopServices::openUrl(QUrl("http://127.0.0.1:3000/"));
-        socket.disconnectFromHost();
-        return;
-    }
-
-    // 2) Try local docs file next to the application
-    QString docsPath = QCoreApplication::applicationDirPath() + "/../docs/index.html";
-    QFileInfo fi(docsPath);
-    if (fi.exists() && fi.isFile()) {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(QDir::toNativeSeparators(fi.absoluteFilePath())));
-        return;
-    }
-
-    // 3) Fallback to the online Docsify site
     QUrl url("https://ananasparenti.github.io/Simulated-EpiGimp/");
     if (!QDesktopServices::openUrl(url)) {
         QMessageBox::warning(this, tr("Erreur"), tr("Impossible d'ouvrir la documentation en ligne."));

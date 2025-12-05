@@ -14,6 +14,10 @@
 #include <QUrl>
 #include "canvas.h"
 #include "helpdialog.h"
+#include "project.h"
+#include <QList>
+#include <QTabBar>
+#include <QStackedWidget>
 namespace Ui { class MainWindow; }
 
 class MainWindow : public QMainWindow
@@ -61,6 +65,13 @@ private:
     QSlider *popupBrushSizeSlider = nullptr;
     QLabel *popupBrushSizeLabel = nullptr;
 
+    // Project management
+    QList<Project*> projects;
+    QTabBar *projectBar = nullptr;
+    QStackedWidget *projectStack = nullptr;
+    Canvas* activeCanvas() const;
+    void createProject(const QString &name = QString());
+
 private slots:
     void onNew();
     void onOpen();
@@ -74,6 +85,7 @@ private slots:
     void onSelectBrushTool();
     void onToggleBrushSizeVisibility();
     void onHelpDocumentation();
+    void onProjectTabChanged(int index);
     // Layers UI
     void onAddLayerClicked();
     void onLayerSelectionChanged();
